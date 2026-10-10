@@ -3,6 +3,7 @@ uvicorn
 pandas
 scikit-learn
 numpy
+joblib
 # Solo para las pruebas:
 pytest
 httpx

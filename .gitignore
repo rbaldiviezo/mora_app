@@ -24,3 +24,5 @@ Thumbs.db
 
 # Datos con información personal: descomenta si el repositorio es público
 # data/*.csv
+
+/models
