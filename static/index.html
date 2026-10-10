@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riesgo de mora e inasistencia</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  section { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; margin-top: 0; }
+  label { display: block; margin: .5rem 0 .2rem; font-weight: 600; }
+  input, button { font-size: 1rem; padding: .4rem .6rem; }
+  button { cursor: pointer; } button:disabled { cursor: wait; opacity: .6; }
+  table { border-collapse: collapse; width: 100%; } td, th { border-bottom: 1px solid #eee; padding: .3rem; text-align: left; }
+  .error { background: #fdecea; color: #8a1c13; padding: .6rem; border-radius: 6px; }
+  .warn { background: #fff4d6; color: #6b4e00; padding: .4rem .6rem; border-radius: 6px; margin: .3rem 0; }
+  .loading { color: #555; font-style: italic; }
+  .bar { background: #eee; border-radius: 4px; height: 18px; } .bar > div { background: #3a6ea5; height: 100%; border-radius: 4px; }
+  .examples button { margin-right: .4rem; font-size: .85rem; }
+  small { color: #666; }
+</style>
+</head>
+<body>
+<h1>Riesgo de mora e inasistencia</h1>
+<p>Estima, con el historial de cada estudiante, la probabilidad de que la <b>próxima cuota</b> se pague tarde
+y de que falte (o pida licencia) en la <b>próxima clase</b>.</p>
+
+<section>
+  <h2>1. Datos y modelo</h2>
+  <p>Por defecto se usa el CSV de ejemplo. También puedes cargar el tuyo (columnas: Estudiante, Materia / Especialidad,
+     Fecha, Nro_Clase, Estado_Asistencia, Detalle_Pago_Observaciones).</p>
+  <input type="file" id="csvFile" accept=".csv">
+  <button id="trainBtn">Entrenar con mi CSV</button>
+  <div id="trainMsg" aria-live="polite"></div>
+  <div id="metrics"></div>
+</section>
+
+<section>
+  <h2>2. Consultar un estudiante</h2>
+  <div class="examples">
+    <small>Ejemplos:</small>
+    <button type="button" data-s="Marco Antonio" data-d="2026-05-15">Caso válido</button>
+    <button type="button" data-s="Lucas Garrón" data-d="2026-02-26">Caso difícil</button>
+    <button type="button" data-s="Pedro" data-d="2026-05-15">Entrada inválida</button>
+  </div>
+  <label for="student">Estudiante</label>
+  <input id="student" list="studentList" autocomplete="off">
+  <datalist id="studentList"></datalist>
+  <label for="date">Fecha de corte</label>
+  <input id="date" type="date">
+  <p><button id="predictBtn">Calcular riesgo</button></p>
+  <div id="result" aria-live="polite"></div>
+</section>
+
+<section>
+  <h2>Límites de la solución</h2>
+  <ul>
+    <li>Son estimaciones basadas en pocos datos (solo 4 faltas reales; la ausencia incluye licencias), no certezas.</li>
+    <li>La mora se deduce del texto del detalle; si un pago no se anotó, aparece como mora.</li>
+    <li>En las métricas, el modelo apenas supera al azar y en mora pierde contra las reglas simples.</li>
+    <li>No incluye lo ocurrido después del último registro del estudiante.</li>
+  </ul>
+</section>
+
+<script>
+const EVENT_NAMES = { late_payment: "Mora en la próxima cuota", absence: "Inasistencia en la próxima clase" };
+const $ = (id) => document.getElementById(id);
+const pct = (x) => (x === null ? "n/d" : (x * 100).toFixed(1) + "%");
+
+// Escape text before inserting it into the page
+function esc(text) {
+  const el = document.createElement("div");
+  el.textContent = text;
+  return el.innerHTML;
+}
+
+// Calls the API and turns any failure into an Error with a readable message
+async function callApi(url, options) {
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (e) {
+    throw new Error("No se pudo conectar con el servidor.");
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.error || "Error inesperado del servidor.");
+    error.suggestions = data.suggestions || [];
+    throw error;
+  }
+  return data;
+}
+
+function showSummary(info) {
+  $("studentList").innerHTML = info.students.map((s) => `<option value="${esc(s)}">`).join("");
+  const rows = info.metrics.map((m) => `<tr><td>${EVENT_NAMES[m.event]}</td><td>${pct(m.test_prevalence)}</td>
+      <td>${m.ap_baseline === null ? "n/d" : m.ap_baseline.toFixed(2)}</td>
+      <td>${m.ap_model === null ? "n/d" : m.ap_model.toFixed(2)}</td></tr>`).join("");
+  $("metrics").innerHTML = `<p><small>${info.students.length} estudiantes, ${info.n_examples} ejemplos. Entrenado con datos
+    anteriores al ${info.split_date}; probado con los posteriores. Último registro: ${info.last_record}.
+    Filas descartadas por fecha inválida: ${info.dropped_rows}.</small></p>
+    <table><tr><th>Evento</th><th>Frecuencia en prueba</th><th>AP reglas</th><th>AP modelo</th></tr>${rows}</table>
+    <p><small>AP = Average Precision (0 a 1). Compárala con la frecuencia: cerca de ese valor equivale a adivinar.</small></p>`;
+}
+
+async function loadStatus() {
+  $("trainMsg").innerHTML = '<p class="loading">Cargando modelo...</p>';
+  try {
+    showSummary(await callApi("/api/status"));
+    $("trainMsg").innerHTML = "";
+  } catch (e) {
+    $("trainMsg").innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
+}
+
+$("trainBtn").addEventListener("click", async () => {
+  const file = $("csvFile").files[0];
+  if (!file) { $("trainMsg").innerHTML = '<p class="error">Primero elige un archivo CSV.</p>'; return; }
+  $("trainBtn").disabled = true;
+  $("trainMsg").innerHTML = '<p class="loading">Entrenando el modelo...</p>';
+  try {
+    const text = await file.text();
+    showSummary(await callApi("/api/train", { method: "POST", headers: { "Content-Type": "text/csv" }, body: text }));
+    $("trainMsg").innerHTML = "<p>Modelo entrenado con tu archivo.</p>";
+  } catch (e) {
+    $("trainMsg").innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  } finally {
+    $("trainBtn").disabled = false;
+  }
+});
+
+$("predictBtn").addEventListener("click", async () => {
+  $("predictBtn").disabled = true;
+  $("result").innerHTML = '<p class="loading">Calculando...</p>';
+  try {
+    const r = await callApi("/api/predict", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ student: $("student").value, date: $("date").value }),
+    });
+    const bars = Object.keys(EVENT_NAMES).map((k) => `<p><b>${EVENT_NAMES[k]}:</b> ${pct(r.probabilities[k])}
+      <small>(promedio general ${pct(r.base_rates[k])})</small></p>
+      <div class="bar"><div style="width:${(r.probabilities[k] * 100).toFixed(1)}%"></div></div>`).join("");
+    const warns = r.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join("");
+    $("result").innerHTML = `<p>Con el historial hasta el <b>${r.cutoff_used}</b> de <b>${esc(r.student)}</b>
+      (${r.history.classes} clases, ${r.history.payments} pagos, ${r.history.absences} ausencias):</p>${bars}${warns}`;
+  } catch (e) {
+    const hint = e.suggestions && e.suggestions.length ? ` ¿Quisiste decir: ${e.suggestions.map(esc).join(", ")}?` : "";
+    $("result").innerHTML = `<p class="error">${esc(e.message)}${hint}</p>`;
+  } finally {
+    $("predictBtn").disabled = false;
+  }
+});
+
+document.querySelectorAll(".examples button").forEach((b) =>
+  b.addEventListener("click", () => { $("student").value = b.dataset.s; $("date").value = b.dataset.d; }));
+
+loadStatus();
+</script>
+</body>
+</html>

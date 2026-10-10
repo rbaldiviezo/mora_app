@@ -1,0 +1,26 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Pruebas y caches
+.pytest_cache/
+.cache/
+
+# Editores y sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Variables de entorno y credenciales (por si se añaden)
+.env
+*.key
+
+# Datos con información personal: descomenta si el repositorio es público
+# data/*.csv
